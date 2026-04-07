@@ -5,6 +5,7 @@
 **TenderValid** — An AI-powered tool that reads RFP documents and vendor proposals, then tells you exactly who meets the requirements and who doesn't.
 
 ---
+Live URL: https://tender-valid.vercel.app/
 
 ## The Problem
 
