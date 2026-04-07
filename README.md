@@ -44,7 +44,7 @@ Once you've analysed multiple vendors, you get a side-by-side view — complianc
 - **Anthropic Claude API** — the `claude-sonnet-4-20250514` model does all the heavy lifting: extraction, semantic matching, risk detection
 - **Native fetch API** — no Axios, no SDK wrappers, just plain browser fetch calls to the Anthropic endpoint
 - **npm** — package management
-- **No database** — everything lives in React state during the session; nothing is stored server-side
+- **DataBase** - is stored in the browser itself as local storage.You can view it on the website by clicking “View Storage” in the footer. 
 
 ---
 
