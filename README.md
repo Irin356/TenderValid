@@ -55,8 +55,8 @@ You'll need Node.js (v18 or above) and an Anthropic API key. If you don't have o
 ### Step 1 — Clone the repo
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/tender-check.git
-cd tender-check
+https://github.com/Irin356/TenderValid.git
+cd TenderValid
 ```
 
 ### Step 2 — Set up the project (first time only)
