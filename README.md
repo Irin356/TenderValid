@@ -119,7 +119,7 @@ You don't need any real documents to test this. On the upload screen, click **Lo
 ## Folder structure
 
 ```
-tender-check/
+TenderValid/
 ├── src/
 │   └── App.jsx       ← the entire app lives here
 ├── public/
