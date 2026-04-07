@@ -1,4 +1,4 @@
-# TenderCheck — Tender Compliance Validator
+# TenderValid — Tender Compliance Validator
 
 ## Project Title
 
