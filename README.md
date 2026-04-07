@@ -2,7 +2,7 @@
 
 ## Project Title
 
-**TenderCheck** — An AI-powered tool that reads RFP documents and vendor proposals, then tells you exactly who meets the requirements and who doesn't.
+**TenderValid** — An AI-powered tool that reads RFP documents and vendor proposals, then tells you exactly who meets the requirements and who doesn't.
 
 ---
 
@@ -18,7 +18,7 @@ That's the problem this project tries to fix.
 
 ## The Solution
 
-TenderCheck lets you upload an RFP, automatically pulls out every mandatory requirement from it, and then checks each vendor's proposal against that list — using AI to understand meaning, not just match keywords.
+TenderValid lets you upload an RFP, automatically pulls out every mandatory requirement from it, and then checks each vendor's proposal against that list — using AI to understand meaning, not just match keywords.
 
 Here's what it actually does, step by step:
 
