@@ -1,23 +1,177 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
+import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf.mjs";
+import pdfWorker from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
+import database from "./database.js";
 
-const API_URL = "https://api.anthropic.com/v1/messages";
+GlobalWorkerOptions.workerSrc = pdfWorker;
 
-async function callClaude(systemPrompt, userPrompt, maxTokens = 1000) {
-  const response = await fetch(API_URL, {
+const GROK_API_BASE = "https://api.x.ai/v1/chat/completions";
+const MAX_GROK_REQUEST_CHARS = 12000;
+const USE_MOCK_AI = true;
+
+function chunkText(text, maxChars = 6000) {
+  const chunks = [];
+  let cursor = 0;
+  while (cursor < text.length) {
+    let end = Math.min(cursor + maxChars, text.length);
+    if (end < text.length) {
+      const lastSpace = text.lastIndexOf(" ", end);
+      if (lastSpace > cursor) {
+        end = lastSpace;
+      }
+    }
+    chunks.push(text.slice(cursor, end).trim());
+    cursor = end;
+  }
+  return chunks.filter(Boolean);
+}
+
+function parseJsonArray(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (err) {
+    console.error("Failed to parse JSON response:", err, raw);
+    return [];
+  }
+}
+
+function mergeRequirements(items) {
+  const seen = new Map();
+  return items
+    .filter((item) => item && item.text && typeof item.text === "string")
+    .map((item, index) => ({
+      id: item.id || `R${String(index + 1).padStart(3, "0")}`,
+      category: item.category || "Technical Specifications",
+      text: item.text.trim(),
+      keywords: Array.isArray(item.keywords) ? item.keywords : [],
+      priority: item.priority || "High",
+      confirmed: item.confirmed !== false,
+    }))
+    .filter((item) => {
+      const key = `${item.category}:${item.text}`.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.set(key, true);
+      return true;
+    });
+}
+
+function mockRequirements() {
+  return [
+    {
+      id: "R001",
+      category: "Technical Specifications",
+      text: "The vendor must provide 99.9% uptime and support AES-256 encryption at rest and in transit.",
+      keywords: ["uptime", "encryption", "AES-256"],
+      priority: "Critical",
+      confirmed: true,
+    },
+    {
+      id: "R002",
+      category: "Legal Compliance",
+      text: "The vendor must comply with GDPR and carry at least $5 million in professional liability insurance.",
+      keywords: ["GDPR", "liability", "insurance"],
+      priority: "High",
+      confirmed: true,
+    },
+    {
+      id: "R003",
+      category: "Financial Terms",
+      text: "The vendor must provide audited financial statements for the last three fiscal years.",
+      keywords: ["audited", "financial statements", "fiscal years"],
+      priority: "Medium",
+      confirmed: true,
+    },
+    {
+      id: "R004",
+      category: "Environmental & Social",
+      text: "The vendor must demonstrate carbon neutrality or equivalent environmental commitment.",
+      keywords: ["carbon neutrality", "environment", "sustainability"],
+      priority: "Medium",
+      confirmed: true,
+    },
+  ];
+}
+
+function mockVendorAnalysis(vendorName, confirmedReqs) {
+  const score = Math.max(65, 100 - confirmedReqs.length * 5);
+  const requirementResults = confirmedReqs.map((req) => ({
+    reqId: req.id,
+    status: "Met",
+    confidence: 90,
+    evidence: `The proposal addresses: ${req.text}`,
+    gap: "",
+  }));
+  return {
+    vendorName,
+    complianceScore: score,
+    requirementResults,
+    risks: [
+      {
+        text: "Some requirements are described generally rather than with specific implementation details.",
+        type: "Vague Language",
+        impact: "The proposal may require further clarification before contracting.",
+      },
+    ],
+  };
+}
+
+async function callGrok(systemPrompt, userPrompt, maxTokens = 1000) {
+  const apiKey = import.meta.env.VITE_GROK_API_KEY;
+  
+  if (!apiKey) {
+    console.error("Available env vars:", import.meta.env);
+    throw new Error(
+      "Grok API key missing. Please set VITE_GROK_API_KEY in your .env file and restart dev server."
+    );
+  }
+
+  if (!systemPrompt || !userPrompt) {
+    throw new Error("System prompt or user prompt is empty");
+  }
+
+  const response = await fetch(GROK_API_BASE, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
+      model: "grok-beta",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
       max_tokens: maxTokens,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userPrompt }],
+      temperature: 0.3,
     }),
   });
+
+  if (!response.ok) {
+    const text = await response.text();
+    let errorMsg = response.statusText;
+    try {
+      const error = JSON.parse(text);
+      errorMsg = error.error?.message || error.message || errorMsg;
+    } catch (e) {
+      // not JSON
+    }
+    if (response.status === 429) {
+      throw new Error(
+        `Grok quota exceeded. Check your xAI account or use a different API key, then restart the app.`
+      );
+    }
+    throw new Error(`Grok API Error (${response.status}): ${errorMsg}`);
+  }
+
   const data = await response.json();
-  const text = data.content?.map((b) => b.text || "").join("") || "";
-  const clean = text.replace(/```json|```/g, "").trim();
-  return clean;
+  const text = data.choices?.[0]?.message?.content || "";
+  if (!text) {
+    throw new Error("Grok returned empty response. Check API quota.");
+  }
+  return text.replace(/```json|```/g, "").trim();
 }
+
 
 const STEPS = ["upload", "requirements", "vendors", "dashboard"];
 
@@ -96,43 +250,159 @@ export default function TenderValidator() {
   const [analyzingVendor, setAnalyzingVendor] = useState(false);
   const [activeVendorTab, setActiveVendorTab] = useState(null);
   const [deepDiveReq, setDeepDiveReq] = useState(null);
+  const [error, setError] = useState(null);
+  const [darkMode, setDarkMode] = useState(false);
+  const [currentRfpId, setCurrentRfpId] = useState(null);
   const fileInputRFP = useRef(null);
   const fileInputVendor = useRef(null);
 
+  // Generate session ID
+  const sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+  // Load session data on component mount
+  useEffect(() => {
+    try {
+      const savedSession = database.getSession(sessionId);
+      if (savedSession) {
+        setStep(savedSession.step || "upload");
+        setRfpText(savedSession.rfpText || "");
+        setRfpName(savedSession.rfpName || "");
+        setRequirements(savedSession.requirements || []);
+        setVendors(savedSession.vendors || []);
+        setCurrentRfpId(savedSession.currentRfpId || null);
+        setActiveVendorTab(savedSession.activeVendorTab || null);
+        setDarkMode(savedSession.darkMode || false);
+      }
+    } catch (err) {
+      console.error("Failed to load session:", err);
+    }
+  }, []);
+
+  // Save session data whenever state changes
+  useEffect(() => {
+    const sessionData = {
+      step,
+      rfpText,
+      rfpName,
+      requirements,
+      vendors,
+      currentRfpId,
+      activeVendorTab,
+      darkMode,
+      timestamp: Date.now()
+    };
+    try {
+      database.saveSession(sessionId, sessionData);
+    } catch (err) {
+      console.error("Failed to save session:", err);
+    }
+  }, [step, rfpText, rfpName, requirements, vendors, currentRfpId, activeVendorTab, darkMode]);
+
+  const clearError = () => setError(null);
+  const toggleDarkMode = () => setDarkMode(!darkMode);
+
+  const exportComplianceReport = () => {
+    if (!vendors.length) return;
+    const report = {
+      rfpName,
+      requirements: requirements.filter(r => r.confirmed),
+      vendors,
+      generatedAt: new Date().toISOString(),
+    };
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `compliance-report-${rfpName || 'rfp'}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const readFile = (file) =>
     new Promise((res, rej) => {
-      const r = new FileReader();
-      r.onload = (e) => res(e.target.result);
-      r.onerror = () => rej(new Error("Read failed"));
-      r.readAsText(file);
+      const reader = new FileReader();
+
+      reader.onload = async (e) => {
+        const data = e.target.result;
+        try {
+          if (file.type === "application/pdf" || /\.pdf$/i.test(file.name)) {
+            const doc = await getDocument({ data }).promise;
+            let text = "";
+            for (let i = 1; i <= doc.numPages; i += 1) {
+              const page = await doc.getPage(i);
+              const content = await page.getTextContent();
+              const pageText = content.items
+                .map((item) => item.str || "")
+                .filter((s) => s.trim().length > 0)
+                .join(" ");
+              if (pageText.trim()) {
+                text += `${pageText}\n\n`;
+              }
+            }
+            res(text.trim() || "No text could be extracted from PDF");
+          } else {
+            res(data);
+          }
+        } catch (err) {
+          rej(new Error(`Failed to parse PDF: ${err.message}`));
+        }
+      };
+
+      reader.onerror = () => rej(new Error("Failed to read file"));
+      if (file.type === "application/pdf" || /\.pdf$/i.test(file.name)) {
+        reader.readAsArrayBuffer(file);
+      } else {
+        reader.readAsText(file);
+      }
     });
 
   const handleRFPFile = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    const text = await readFile(file);
-    setRfpText(text);
-    setRfpName(file.name);
+    try {
+      clearError();
+      const text = await readFile(file);
+      setRfpText(text);
+      setRfpName(file.name);
+
+      // Save RFP to database
+      const rfpId = database.saveRfp(file.name, text);
+      setCurrentRfpId(rfpId);
+      console.log(`RFP saved to database with ID: ${rfpId}`);
+    } catch (err) {
+      setError(`Failed to upload RFP: ${err.message}`);
+    }
   };
 
   const handleVendorFile = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    const text = await readFile(file);
-    setCurrentVendorText(text);
-    setCurrentVendorName(file.name.replace(/\.[^/.]+$/, ""));
+    try {
+      clearError();
+      const text = await readFile(file);
+      setCurrentVendorText(text);
+      setCurrentVendorName(file.name.replace(/\.[^/.]+$/, ""));
+    } catch (err) {
+      setError(`Failed to upload vendor proposal: ${err.message}`);
+    }
   };
 
   const loadDemo = () => {
     setRfpText(DEMO_RFP);
     setRfpName("IT_Infrastructure_RFP.txt");
+
+    // Save demo RFP to database
+    const rfpId = database.saveRfp("IT_Infrastructure_RFP.txt", DEMO_RFP);
+    setCurrentRfpId(rfpId);
+    console.log(`Demo RFP saved to database with ID: ${rfpId}`);
   };
 
   const extractRequirements = async () => {
     setLoadingReqs(true);
+    clearError();
     try {
       const system = `You are a legal and procurement expert. Extract ALL mandatory requirements from RFP documents. Return ONLY valid JSON — no prose, no markdown fences.`;
-      const prompt = `Extract every mandatory requirement from this RFP. Look for words like "shall", "must", "required", "mandatory". Return a JSON array of objects with this exact shape:
+      const basePrompt = `Extract every mandatory requirement from this RFP segment. Look for words like "shall", "must", "required", "mandatory". Return a JSON array of objects with this exact shape:
 [
   {
     "id": "R001",
@@ -142,29 +412,70 @@ export default function TenderValidator() {
     "priority": "Critical" | "High" | "Medium",
     "confirmed": true
   }
-]
+]`;
 
-RFP:
-${rfpText}`;
-      const raw = await callClaude(system, prompt, 2000);
-      const parsed = JSON.parse(raw);
+      let parsed = [];
+
+      if (USE_MOCK_AI) {
+        parsed = mockRequirements();
+      } else if (rfpText.length > MAX_GROK_REQUEST_CHARS) {
+        const chunks = chunkText(rfpText, 8000);
+        const chunkOutputs = await Promise.all(
+          chunks.map((chunk, index) => {
+            const prompt = `${basePrompt}\n\nRFP segment ${index + 1} of ${chunks.length}:\n${chunk}`;
+            return callGrok(system, prompt, 800);
+          })
+        );
+
+        const allRequirements = chunkOutputs.flatMap((raw) => parseJsonArray(raw));
+        parsed = mergeRequirements(allRequirements);
+      } else {
+        const prompt = `${basePrompt}\n\nRFP:\n${rfpText}`;
+        const raw = await callGrok(system, prompt, 1200);
+        parsed = parseJsonArray(raw);
+      }
+
+      if (!parsed.length) {
+        throw new Error("No requirements could be extracted. Try a smaller file or a cleaner RFP text format.");
+      }
+
+      // Clear existing requirements for this RFP
+      if (currentRfpId) {
+        database.clearRequirements(currentRfpId);
+      }
+
+      // Save requirements to database
+      if (currentRfpId) {
+        database.saveRequirements(currentRfpId, parsed);
+        console.log(`Saved ${parsed.length} requirements to database`);
+      }
+
       setRequirements(parsed);
       setStep("requirements");
     } catch (err) {
-      alert("Error extracting requirements. Try again.");
+      setError(`Error extracting requirements: ${err.message}`);
     }
     setLoadingReqs(false);
   };
 
   const toggleRequirement = (id) => {
     setRequirements((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, confirmed: !r.confirmed } : r))
+      prev.map((r) => {
+        if (r.id === id) {
+          const newConfirmed = !r.confirmed;
+          // Update database
+          database.updateRequirementConfirmation(id, newConfirmed);
+          return { ...r, confirmed: newConfirmed };
+        }
+        return r;
+      })
     );
   };
 
   const analyzeVendor = async () => {
     if (!currentVendorText || !currentVendorName) return;
     setAnalyzingVendor(true);
+    clearError();
     const confirmedReqs = requirements.filter((r) => r.confirmed);
     try {
       const system = `You are a compliance analyst. Analyze vendor proposals against RFP requirements. Return ONLY valid JSON.`;
@@ -196,8 +507,16 @@ ${JSON.stringify(confirmedReqs, null, 2)}
 Vendor Proposal:
 ${currentVendorText}`;
 
-      const raw = await callClaude(system, prompt, 2000);
-      const parsed = JSON.parse(raw);
+      const parsed = USE_MOCK_AI
+        ? mockVendorAnalysis(currentVendorName, confirmedReqs)
+        : JSON.parse(await callGrok(system, prompt, 1200));
+
+      // Save vendor to database
+      if (currentRfpId) {
+        database.saveVendor(parsed.vendorName, currentRfpId, parsed.complianceScore, parsed);
+        console.log(`Saved vendor ${parsed.vendorName} to database`);
+      }
+
       setVendors((prev) => {
         const exists = prev.findIndex((v) => v.vendorName === parsed.vendorName);
         if (exists >= 0) {
@@ -211,13 +530,14 @@ ${currentVendorText}`;
       setCurrentVendorName("");
       setCurrentVendorText("");
     } catch (err) {
-      alert("Error analyzing vendor. Try again.");
+      setError(`Error analyzing vendor: ${err.message}`);
     }
     setAnalyzingVendor(false);
   };
 
   const loadDemoVendors = async () => {
     setAnalyzingVendor(true);
+    clearError();
     const confirmedReqs = requirements.filter((r) => r.confirmed);
     const system = `You are a compliance analyst. Return ONLY valid JSON.`;
 
@@ -235,7 +555,9 @@ ${currentVendorText}`;
 }
 Requirements: ${JSON.stringify(confirmedReqs)}
 Proposal: ${text}`;
-      const raw = await callClaude(system, prompt, 2000);
+      const raw = USE_MOCK_AI
+        ? JSON.stringify(mockVendorAnalysis(name, confirmedReqs))
+        : await callGrok(system, prompt, 1200);
       return JSON.parse(raw);
     };
 
@@ -244,10 +566,18 @@ Proposal: ${text}`;
         analyzeOne("CloudTech Solutions", DEMO_VENDOR_A),
         analyzeOne("NexaCore Systems", DEMO_VENDOR_B),
       ]);
+
+      // Save demo vendors to database
+      if (currentRfpId) {
+        database.saveVendor(a.vendorName, currentRfpId, a.complianceScore, a);
+        database.saveVendor(b.vendorName, currentRfpId, b.complianceScore, b);
+        console.log(`Saved demo vendors to database`);
+      }
+
       setVendors([a, b]);
       setActiveVendorTab(a.vendorName);
-    } catch (e) {
-      alert("Demo analysis error, try again.");
+    } catch (err) {
+      setError(`Error loading demo vendors: ${err.message}`);
     }
     setAnalyzingVendor(false);
   };
@@ -279,11 +609,11 @@ Proposal: ${text}`;
   const renderUpload = () => (
     <div style={{ maxWidth: 640, margin: "0 auto", padding: "2rem 1rem" }}>
       <div style={{ marginBottom: "2rem" }}>
-        <h2 style={{ fontSize: 22, fontWeight: 600, margin: "0 0 6px", color: "var(--color-text-primary)" }}>
-          New Tender Review
+        <h2 style={{ fontSize: 26, fontWeight: 700, margin: "0 0 10px", color: "var(--color-text-primary)" }}>
+          Tender Compliance Validator
         </h2>
-        <p style={{ color: "var(--color-text-secondary)", margin: 0, fontSize: 15 }}>
-          Upload your Request for Proposal (RFP) document to begin automated compliance analysis.
+        <p style={{ color: "var(--color-text-secondary)", margin: 0, fontSize: 15, maxWidth: 620, lineHeight: 1.7 }}>
+          Automatically extract mandatory requirements from RFPs and validate vendor proposals against them. Reduce manual review time, eliminate missed clauses, and surface weak or missing language before contracts are signed.
         </p>
       </div>
 
@@ -805,21 +1135,41 @@ Proposal: ${text}`;
   };
 
   return (
-    <div style={{ minHeight: "100vh", background: "var(--color-background-tertiary)", fontFamily: "var(--font-sans)" }}>
+    <div style={{ minHeight: "100vh", background: "var(--color-background-tertiary)", fontFamily: "var(--sans)" }} className={darkMode ? 'dark-mode' : ''}>
+      {error && (
+        <div style={{ background: "#FCEBEB", borderBottom: "1px solid #F5BCBC", padding: "12px 1rem", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <div style={{ maxWidth: 900, margin: "0 auto", width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+            <div style={{ fontSize: 14, color: "#791F1F" }}>
+              <strong>Error:</strong> {error}
+            </div>
+            <button
+              onClick={clearError}
+              style={{ padding: "2px 8px", border: "none", background: "transparent", color: "#791F1F", cursor: "pointer", fontSize: 18, lineHeight: 1 }}
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
       <div style={{ background: "var(--color-background-primary)", borderBottom: "0.5px solid var(--color-border-tertiary)", position: "sticky", top: 0, zIndex: 10 }}>
         <div style={{ maxWidth: 900, margin: "0 auto", padding: "0 1rem", display: "flex", alignItems: "center", justifyContent: "space-between", height: 56 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span style={{ fontSize: 18 }}>⚖️</span>
-            <span style={{ fontWeight: 600, fontSize: 16, color: "var(--color-text-primary)" }}>TenderCheck</span>
+            <span style={{ fontWeight: 600, fontSize: 16, color: "var(--color-text-primary)" }}>Tender Compliance Validator</span>
             {rfpName && (
-              <span style={{ fontSize: 12, color: "var(--color-text-secondary)", padding: "2px 8px", background: "var(--color-background-secondary)", borderRadius: 4 }}>
-                {rfpName}
-              </span>
+              <>
+                <span style={{ fontSize: 12, color: "var(--color-text-secondary)", padding: "2px 8px", background: "var(--color-background-secondary)", borderRadius: 4 }}>
+                  {rfpName}
+                </span>
+                <span style={{ fontSize: 11, color: "var(--color-text-secondary)", padding: "2px 6px", background: "#E6F1FB", borderRadius: 4 }}>
+                  💾 {requirements.length} reqs, {vendors.length} vendors
+                </span>
+              </>
             )}
           </div>
           <div style={{ display: "flex", gap: 4 }}>
             {STEPS.map((s, i) => {
-              const labels = { upload: "Upload", requirements: "Checklist", vendors: "Vendors", dashboard: "Dashboard" };
+              const labels = { upload: "Upload RFP", requirements: "Review Checklist", vendors: "Vendor Analysis", dashboard: "Final Dashboard" };
               const accessible = (s === "upload") || (s === "requirements" && requirements.length > 0) || (s === "vendors" && requirements.length > 0) || (s === "dashboard" && vendors.length >= 1);
               return (
                 <button
@@ -840,6 +1190,36 @@ Proposal: ${text}`;
                 </button>
               );
             })}
+            {step === 'dashboard' && vendors.length > 0 && (
+              <button
+                onClick={exportComplianceReport}
+                style={{
+                  padding: '4px 12px',
+                  backgroundColor: '#28a745',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: 6,
+                  cursor: 'pointer',
+                  fontSize: 13,
+                }}
+              >
+                📄 Export
+              </button>
+            )}
+            <button
+              onClick={toggleDarkMode}
+              style={{
+                padding: '4px 12px',
+                backgroundColor: darkMode ? '#444444' : '#e9ecef',
+                color: darkMode ? '#ffffff' : '#333333',
+                border: 'none',
+                borderRadius: 6,
+                cursor: 'pointer',
+                fontSize: 13,
+              }}
+            >
+              {darkMode ? '☀️' : '🌙'}
+            </button>
           </div>
         </div>
       </div>
@@ -849,6 +1229,30 @@ Proposal: ${text}`;
         {step === "requirements" && renderRequirements()}
         {step === "vendors" && renderVendors()}
         {step === "dashboard" && renderDashboard()}
+      </div>
+
+      {/* Database Stats Footer */}
+      <div style={{ background: "var(--color-background-secondary)", borderTop: "0.5px solid var(--color-border-tertiary)", padding: "8px 1rem", marginTop: "auto" }}>
+        <div style={{ maxWidth: 900, margin: "0 auto", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+          <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>
+             <strong>Database Stats:</strong> {currentRfpId ? `Active RFP` : " 0 RFPs"} | {requirements.length}  Requirements | {vendors.length}  Vendors
+          </div>
+          <button
+            onClick={() => {
+              const stats = {
+                rfps: JSON.parse(localStorage.getItem('tender_validator_rfps') || '[]').length,
+                requirements: JSON.parse(localStorage.getItem('tender_validator_requirements') || '[]').length,
+                vendors: JSON.parse(localStorage.getItem('tender_validator_vendors') || '[]').length,
+                sessions: JSON.parse(localStorage.getItem('tender_validator_sessions') || '[]').length
+              };
+              console.log('Database Stats:', stats);
+              alert(` Storage Stats:\n\n RFPs: ${stats.rfps}\n Requirements: ${stats.requirements}\n Vendors: ${stats.vendors}\n Sessions: ${stats.sessions}\n\nOpen DevTools (F12) → Application → Local Storage to view raw data.`);
+            }}
+            style={{ fontSize: 10, padding: "3px 8px", background: "#E6F1FB", color: "#0C447C", border: "none", borderRadius: 4, cursor: "pointer" }}
+          >
+            View Storage 🔍
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -1,18 +1,25 @@
 :root {
-  --text: #6b6375;
-  --text-h: #08060d;
-  --bg: #fff;
-  --border: #e5e4e7;
-  --code-bg: #f4f3ec;
-  --accent: #aa3bff;
-  --accent-bg: rgba(170, 59, 255, 0.1);
-  --accent-border: rgba(170, 59, 255, 0.5);
-  --social-bg: rgba(244, 243, 236, 0.5);
+  --text: #5b5668;
+  --text-h: #14111a;
+  --bg: #f7f8fb;
+  --border: #dde0e6;
+  --code-bg: #f2f3f8;
+  --accent: #4f46e5;
+  --accent-bg: rgba(79, 70, 229, 0.12);
+  --accent-border: rgba(79, 70, 229, 0.24);
+  --social-bg: rgba(236, 240, 254, 0.7);
+  --color-background-primary: #ffffff;
+  --color-background-secondary: #f1f3f8;
+  --color-background-tertiary: #eef2fb;
+  --color-border-secondary: #dfe3ea;
+  --color-border-tertiary: #e5e9f1;
+  --color-text-primary: #161a29;
+  --color-text-secondary: #59607a;
   --shadow:
-    rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
+    rgba(15, 23, 42, 0.08) 0 16px 32px -16px, rgba(15, 23, 42, 0.04) 0 4px 8px -4px;
 
-  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --sans: 'Inter', system-ui, 'Segoe UI', Roboto, sans-serif;
+  --heading: 'Inter', system-ui, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, Consolas, monospace;
 
   font: 18px/145% var(--sans);
@@ -28,6 +35,17 @@
   @media (max-width: 1024px) {
     font-size: 16px;
   }
+}
+
+/* Dark mode variables */
+.dark-mode {
+  --color-background-primary: #1a1a1a;
+  --color-background-secondary: #2a2a2a;
+  --color-background-tertiary: #121212;
+  --color-border-secondary: #404040;
+  --color-border-tertiary: #333333;
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #cccccc;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -52,14 +70,15 @@
 
 body {
   margin: 0;
+  min-height: 100vh;
+  background: radial-gradient(circle at top left, rgba(79, 70, 229, 0.08), transparent 32%), radial-gradient(circle at bottom right, rgba(16, 185, 129, 0.08), transparent 28%), var(--bg);
 }
 
 #root {
   width: 1126px;
   max-width: 100%;
   margin: 0 auto;
-  text-align: center;
-  border-inline: 1px solid var(--border);
+  text-align: left;
   min-height: 100svh;
   display: flex;
   flex-direction: column;
